@@ -35,6 +35,12 @@ void cg::renderer::ray_tracing_renderer::init()
 	raytracer->set_viewport(settings->width, settings->height);
 	raytracer->set_vertex_buffers(model->get_vertex_buffers());
 	raytracer->set_index_buffers(model->get_index_buffers());
+
+	lights.push_back({float3{0, 1.58, -0.03f},
+						float3{0.78f, 0.78f, 0.78f}});
+
+	shadow_raytracer =
+			std::make_shared<cg::renderer::raytracer<cg::vertex, cg::unsigned_color>>();
 }
 
 void cg::renderer::ray_tracing_renderer::destroy() {}
@@ -51,14 +57,49 @@ void cg::renderer::ray_tracing_renderer::render()
 						  ray.direction.z * 0.5f + 0.5f};
 		return payload;
 			};
-	raytracer->closest_hit_shader = [](const ray& ray, payload& payload,
+	raytracer->closest_hit_shader = [this](const ray& ray, payload& payload,
 			const triangle<cg::vertex>& triangle)
 					{
-		payload.color = cg::color::from_float3(triangle.ambient);
+		float3 result_color{0.f, 0.f, 0.f};
+		float3 position = ray.position + ray.direction * payload.t;
+		float3 normal = normalize(payload.bary.x * triangle.na +
+				payload.bary.y * triangle.nb +
+				payload.bary.z * triangle.nc);
+
+		for (auto& light : lights)
+		{
+			cg::renderer::ray to_light(position, light.position - position);
+
+			auto shadow_payload =
+					shadow_raytracer->trace_ray(to_light, 1, length(light.position - position));
+
+			if (shadow_payload.t < 0.f)
+			{
+				result_color += triangle.diffuse * light.color *
+						std::max(0.f, dot(normal, to_light.direction));
+			}
+
+			result_color += triangle.diffuse * light.color *
+					std::max(0.f, dot(normal, to_light.direction));
+		}
+
+		payload.color = cg::color::from_float3(result_color);
 		return payload;
 					};
 
 	raytracer->build_acceleration_structure();
+
+	shadow_raytracer->miss_shader = [](const ray& ray)
+	{
+		payload payload{};
+		payload.t = -1.f;
+		return payload;
+	};
+	shadow_raytracer->any_hit_shader=[](const ray& ray, payload& payload,
+										  const triangle<cg::vertex>& triangle){
+		return payload;
+	};
+	shadow_raytracer->acceleration_structures = raytracer -> acceleration_structures;
 
 	raytracer->ray_generation(
 			camera->get_position(), camera->get_direction(),
